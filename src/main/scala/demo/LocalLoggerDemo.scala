@@ -13,6 +13,7 @@ import demo.LocalLogger.Context
 object LocalLoggerDemo extends IOApp.Simple {
   def deliver[F[_]: LocalLogger: FlatMap]: F[Unit] =
     for {
+      // log4cats uses MDC to print context, trace-id needs to be specified in logback pattern layout in logback.xml
       _ <- LocalLogger[F].scope(Map("trace-id" -> "id-1"))(
         post("127.0.0.1:8080")
       )
@@ -24,14 +25,41 @@ object LocalLoggerDemo extends IOApp.Simple {
   def post[F[_]: LocalLogger](url: String): F[Unit] =
     LocalLogger[F].info(s"POST $url")
 
+  val localWithIOLocal: IO[Local[IO, Context]] =
+    IOLocal(Map.empty[String, String]).map { ioLocal =>
+      new Local[IO, Context] {
+        override def local[A](fa: IO[A])(f: Context => Context): IO[A] =
+          for {
+            prev <- ioLocal.get
+            res <- Resource
+              .make(ioLocal.update(f))(_ => ioLocal.set(prev))
+              .surround(fa)
+          } yield res
+
+        override def applicative: Applicative[IO] = implicitly
+
+        override def ask[E2 >: Context]: IO[E2] = ioLocal.get
+      }
+    }
+
+  /** use default instance of Local for Kleisli */
   override def run: IO[Unit] =
     LocalLogger
       .withLocal[Kleisli[IO, Context, *]]
       .flatMap { implicit localLogger => deliver }
       .run(Map.empty)
 
-  //  override def run: IO[Unit] =
-  //    LocalLogger.withIOLocal.flatMap { implicit localLogger => deliver }
+  /** use LocalLogger instance for IO, implemented directly with IOLocal */
+//  override def run: IO[Unit] =
+//    LocalLogger.withIOLocal.flatMap { implicit localLogger => deliver }
+
+  /** create LocalLogger with our own instance of Local for IO, implemented with IOLocal */
+//  override def run: IO[Unit] = localWithIOLocal.flatMap {
+//    implicit localInstance =>
+//      LocalLogger.withLocal[IO].flatMap { implicit localLogger =>
+//        deliver
+//      }
+//  }
 }
 
 trait LocalLogger[F[_]] {
